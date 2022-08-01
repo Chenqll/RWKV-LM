@@ -9,7 +9,9 @@ np.set_printoptions(precision=4, suppress=True, linewidth=200)
 
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-RUN_DEVICE = 'cuda'
+os.environ['RWKV_FLOAT_MODE'] = 'bf16' # 'bf16' (stable) or 'fp16' (will overflow after training a large model for very long. can be solved in the future)
+os.environ['RWKV_RUN_DEVICE'] = 'cuda'
+RUN_DEVICE = os.environ['RWKV_RUN_DEVICE']
 
 import torch
 from src.model_run import RWKV_RNN, RWKV_GPT
@@ -27,7 +29,13 @@ tokenizer = TOKENIZER('vocab', UNKNOWN_CHAR=' ')
 
 ########################################################################################################
 
-model_train = GPT(GPTConfig(tokenizer.vocab_size, ctx_len, model_type=model_type, n_layer=n_layer, n_embd=n_embd)).cuda().half()
+model_train = GPT(GPTConfig(tokenizer.vocab_size, ctx_len, model_type=model_type, n_layer=n_layer, n_embd=n_embd)).cuda()
+
+if os.environ['RWKV_FLOAT_MODE'] == 'fp16':
+    model_train = model_train.half()
+elif os.environ['RWKV_FLOAT_MODE'] == 'bf16':
+    model_train = model_train.bfloat16()
+
 print('loading ' + model_name)
 m2 = torch.load(model_name + '.pth', map_location=RUN_DEVICE)
 model_train.load_state_dict(m2)

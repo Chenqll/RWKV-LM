@@ -10,13 +10,19 @@ RWKV-3 1.5B on A40 (tf32) = always 0.015 sec/token, tested using simple pytorch 
 
 GPT2-XL 1.3B on A40 (tf32) = 0.032 sec/token (for ctxlen 1000), tested using HF, GPU utilization 45% too (interesting), VRAM 9655M
 
+## Join our Discord: https://discord.gg/bDSBUMeFpc :)
+
+You are welcome to join the RWKV discord https://discord.gg/bDSBUMeFpc to build upon it. We have plenty of potential compute (A100 40Gs) now (thanks to CoreWeave), so if you have interesting ideas I can run them.
+
+I am training RWKV-3 on the Pile (https://github.com/BlinkDL/RWKV-v2-RNN-Pile):
+
+![RWKV-v3-1.5B-Pile](RWKV-v3-1.5B-Pile.png)
+
+All of the trained models will be open-source. Inference is very fast (only matrix-vector multiplications, no matrix-matrix multiplications) even on CPUs, so you can even run a LLM on your phone.
+
 How it works: RWKV gathers information to a number of channels, which are also decaying with different speeds as you move to the next token. It's very simple once you understand it.
 
 **RWKV is parallelizable because the time-decay of each channel is data-independent (and trainable)**. For example, in usual RNN you can adjust the time-decay of a channel from say 0.8 to 0.5 (these are called "gates"), while in RWKV you simply move the information from a W-0.8-channel to a W-0.5-channel to achieve the same effect. Moreover, you can fine-tune RWKV into a non-parallelizable RNN (then you can use outputs of later layers of the previous token) if you want extra performance.
-
-## Join our Discord: https://discord.gg/bDSBUMeFpc :)
-
-You are welcome to join the RWKV discord https://discord.gg/bDSBUMeFpc to build upon it. We have plenty of potential compute (A100 40Gs) now (thanks to CoreWeave), so if you have interesting ideas I can run them. I am also looking for CUDA gurus to optimize the kernel (https://github.com/BlinkDL/RWKV-CUDA). Thank you.
 
 Here are some of my TODOs. Let's work together :)
 
@@ -27,12 +33,6 @@ Here are some of my TODOs. Let's work together :)
 * HuggingFace integration, and optimized CPU & iOS & Android & WASM & WebGL inference. RWKV is a RNN and very friendly for edge devices. Let's make it possible to run a LLM on your phone.
 
 * Test it on bidirectional & MLM tasks, and image & audio & video tokens.
-
-I am training RWKV-3 on the Pile (https://github.com/BlinkDL/RWKV-v2-RNN-Pile):
-
-![RWKV-v3-1.5B-Pile](RWKV-v3-1.5B-Pile.png)
-
-All of the trained models will be open-source. Inference is very fast (only matrix-vector multiplications, no matrix-matrix multiplications) even on CPUs, and I believe you can run a 1.5B params RWKV-v2-RNN with reasonable speed on your phone.
 
 User feedback:
 > *I've so far toyed around the character-based model on our relatively small pre-training dataset (around 10GB of text), and the results are extremely good - similar ppl to models taking much, much longer to train.*
@@ -263,6 +263,31 @@ where A[t] and B[t] are the numerator and denominator of the previous step, resp
 I believe RWKV is performant because W is like repeatedly applying a diagonal matrix. Note (P^{-1} D P)^n = P^{-1} D^n P, so it is similar to repeatedly applying a general diagonalizable matrix.
 
 Moreover it's possible to turn it into a continuous ODE (a bit similar to State Space Models). I will write about it later.
+
+## Multimodal ideas
+
+I have an idea for [text --> 32x32 RGB image] using a LM (transformer, RWKV, etc.). Will test it soon.
+
+Firstly, LM loss (instead of L2 loss), so the image will not be blurry.
+
+Secondly, color quantization. For example, only allowing 8 levels for R/G/B. Then the image vocab size is 8x8x8 = 512 (for each pixel), instead of 2^24.
+Therefore, a 32x32 RGB image = a len1024 sequence of vocab512 (image tokens), which is a typical input for usual LMs.
+(Later we can use diffusion models to upsample and generate RGB888 images. We might be able to use a LM for this too.)
+
+Thirdly, 2D positional embeddings that are easy for the model to understand.
+For example, add one-hot X & Y coords to the first 64(=32+32) channels. Say if the pixel is at x=8, y=20, then we will add 1 to channel 8 and channel 52 (=32+20).
+Moreover probably we can add the float X & Y coords (normalized to 0~1 range) to another 2 channels. And other periodic pos. encoding might help too (will test). 
+
+Finally, RandRound when doing the color quantization in the DataLoader.
+For example, if the float level is 4.578, then there is a 57.8% chance to use 5, and (1-57.8%) chance to use 4.
+And we can allow both 4 and 5 in the prediction, but the loss will be higher if the prediction is 4.
+
+Multi-task training might help too. I will try this dataset format:
+[TxtFirst] [Desc of Img (txt tokens)] [Img] [img tokens]
+and sometimes
+[ImgFirst] [img tokens] [Txt] [Desc of Img (txt tokens)]
+... the order of the imgs shall be randomized in the DataLoader, and [TxtFirst] [ImgFirst] [Img] [Txt] are special tokens
+and do random sampling of the full dataset. So sometimes the model will see the img tokens first and then the corresponding txt tokens, which is a [img -> txt] task. And the model will see some partial imgs and partial txts. I think a char-level LM might help the model to write correct text on images.
 
 ## How to sample a large dataset (for training)
 

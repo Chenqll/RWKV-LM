@@ -6,8 +6,15 @@ import os
 
 os.environ['USE_WANDB'] = '0' # 0 = False, 1 = True
 
-### This is using DeepSpeed stage2 + FP16 ##############################################################
+os.environ['RWKV_FLOAT_MODE'] = 'bf16' # 'bf16' (stable) or 'fp16' (will overflow after training a large model for very long. can be solved in the future)
 
+### This is using DeepSpeed stage2 + FP16 ##############################################################
+# 
+# Currently it's slow to initialize a new model. Hence I suggest this procedure for multi-GPU training:
+# 1) leave RWKV_NUM_GPUS = '1' and let it run for 1 'mini-epoch' and it will save a 'trained-1.pth'
+# 2) set RWKV_NUM_GPUS = '8' (or your #GPU), batch_size = NUM_GPUS * single_gpu_batchsz, 
+#    EPOCH_BEGIN = 1, LOAD_MODEL = True, and it will load 'trained-1.pth' and continue the training
+#
 os.environ['RWKV_NUM_GPUS'] = '1' # num of GPUs to use
 NUM_GPUS = int(os.environ['RWKV_NUM_GPUS'])
 
@@ -28,6 +35,7 @@ import logging, types
 from src.utils import Dataset
 import torch
 import numpy as np
+from src.binidx import MMapIndexedDataset # for the Megatron-LM 'binidx' format
 
 np.set_printoptions(precision=4, suppress=True, linewidth=200)
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -39,8 +47,10 @@ torch.backends.cuda.matmul.allow_tf32 = True
 ### Step 1: set training data ##########################################################################
 
 datafile = "../data/enwik8" # your data
-datafile_encoding = 'utf-8'
-# datafile_encoding = 'utf-16le'
+datafile_encoding = 'utf-8' # 'utf-8' 'utf-16le' 'binidx'
+
+# datafile = './my-gpt_seq_document'
+# datafile_encoding = 'binidx'
 
 ### Step 2: set model size #############################################################################
 
@@ -58,7 +68,7 @@ model_type = 'RWKV'
 ### Step 3: set batch size #############################################################################
 
 # if you see "CUDA out of memory", reduce batch_size. Use nvidia-smi to find the highest value for your GPU.
-batch_size = 12
+batch_size = 12 * NUM_GPUS
 assert (batch_size % NUM_GPUS == 0)
 
 ### Step 4: set learning rate, number of mini-epochs #######################################################
@@ -87,10 +97,10 @@ MODEL_NAME = epoch_save_path + str(EPOCH_BEGIN)
 
 ########################################################################################################
 
-if LOAD_MODEL and EPOCH_BEGIN > 0: # we are not saving gradients. so let's have some warmup if we load a model
-    warmup_tokens = ctx_len * batch_size * 50
+if LOAD_MODEL and EPOCH_BEGIN > 0: # we are not saving gradients, so let's have some warmup if we load a model
+    warmup_tokens = 50 * ctx_len * batch_size // NUM_GPUS
 else:
-    warmup_tokens = ctx_len * batch_size * 0
+    warmup_tokens = 0
 
 betas = (0.9, 0.99)
 eps = 1e-8
@@ -102,8 +112,11 @@ num_workers = 1 # DataLoader worker. I only tested num_workers = 1
 ########################################################################################################
 
 print('loading data... ' + datafile)
-train_dataset = Dataset(open(
-    datafile, "r", encoding=datafile_encoding).read(), ctx_len, epoch_length_fixed)
+if datafile_encoding != 'binidx':
+    train_dataset = Dataset(open(
+        datafile, "r", encoding=datafile_encoding).read(), ctx_len, epoch_length_fixed)
+else:
+    train_dataset = Dataset(MMapIndexedDataset(datafile), ctx_len, epoch_length_fixed)
 
 ########################################################################################################
 # Train model
@@ -111,8 +124,8 @@ train_dataset = Dataset(open(
 if __name__ == '__main__':
     from src.trainer import Trainer, TrainerConfig
 
-    print('model', model_type, 'epoch', n_epoch, 'batchsz', batch_size, 'betas',
-          betas, 'eps', eps, 'ctx', ctx_len, 'layer', n_layer, 'embd', n_embd, )
+    print('\nmodel', model_type, os.environ['RWKV_FLOAT_MODE'], 'epoch', n_epoch, 'batchsz', batch_size, 'betas',
+          betas, 'eps', eps, 'ctx', ctx_len, 'layer', n_layer, 'embd', n_embd, '\n')
 
     tconf = TrainerConfig(model_type=model_type, max_epochs=n_epoch, batch_size=batch_size,
                           learning_rate=lr_init, lr_decay=True, lr_final=lr_final, betas=betas, eps=eps,
@@ -127,9 +140,52 @@ if __name__ == '__main__':
 
     from pytorch_lightning.strategies import DeepSpeedStrategy
     
-    # you can set grad_norm_clip in deepspeed.json
-    
-    trainer = Trainer(strategy=DeepSpeedStrategy(config='deepspeed.json'), devices=NUM_GPUS, accelerator="gpu", precision=16)
+    DEEPSPEED_CFG = {
+        "zero_allow_untested_optimizer":True,
+        "zero_optimization":{
+            "stage":2,
+            "contiguous_gradients":True,
+            "overlap_comm":True,
+            "allgather_partitions":True,
+            "reduce_scatter":True,
+            "allgather_bucket_size":200000000,
+            "reduce_bucket_size":200000000,
+            "sub_group_size":1000000000000
+        },
+        "activation_checkpointing":{
+            "partition_activations":False,
+            "cpu_checkpointing":False,
+            "contiguous_memory_optimization":False,
+            "synchronize_checkpoint_boundary":False
+        },
+        "aio":{
+            "block_size":1048576,
+            "queue_depth":8,
+            "single_submit":False,
+            "overlap_events":True,
+            "thread_count":1
+        },
+        "gradient_clipping": 1.0,
+        "gradient_accumulation_steps": 1,
+    }
+
+    if os.environ['RWKV_FLOAT_MODE'] == 'fp16':
+        DEEPSPEED_CFG["fp16"] = {
+            "fp16": True,
+            "enabled": True,
+            "loss_scale": 0,
+            "initial_scale_power": 12,
+            "loss_scale_window": 1000,
+            "hysteresis": 2,
+            "min_loss_scale": 1
+        }
+        trainer = Trainer(strategy=DeepSpeedStrategy(config=DEEPSPEED_CFG), devices=NUM_GPUS, accelerator="gpu", precision=16)
+    elif os.environ['RWKV_FLOAT_MODE'] == 'bf16':
+        DEEPSPEED_CFG["bf16"] = {
+            "enabled": True
+        }
+        trainer = Trainer(strategy=DeepSpeedStrategy(config=DEEPSPEED_CFG), devices=NUM_GPUS, accelerator="gpu", precision='bf16')
+
     print(trainer._strategy.config)
 
     trainer.run(m_cfg, train_dataset, None, tconf)

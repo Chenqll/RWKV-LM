@@ -13,9 +13,8 @@ import pdb
 
 logger = logging.getLogger(__name__)
 
-RWKV_HEAD_QK_DIM = 256
+RWKV_HEAD_QK_DIM = 0
 print(f'\nRWKV_HEAD_QK_DIM {RWKV_HEAD_QK_DIM}\n')
-
 # ########################################################################################################
 # # CUDA Kernel
 # ########################################################################################################
@@ -114,6 +113,58 @@ print(f'\nRWKV_HEAD_QK_DIM {RWKV_HEAD_QK_DIM}\n')
 #                 nn.init.orthogonal_(m.weight, gain=gain)
 #             else:
 #                 nn.init.normal_(m.weight, mean=0.0, std=-scale)
+
+########################################################################################################
+# RWKV: RWKV Time-mix + RWKV Channel-mix
+########################################################################################################
+
+def RWKV_Init(module, config):  # fancy initialization of all lin & emb layer in the module
+    print('\n[--> first run, init model params (very slow for large models) <--]')
+    print('[so you shall only do it for 1 single GPU and save the checkpt and load it when using multiple GPU]\n')
+    for m in module.modules():
+        if not isinstance(m, (nn.Linear, nn.Embedding)):
+            continue
+        with torch.no_grad():
+            name = '[unknown weight]'
+            for name, parameter in module.named_parameters():  # find the name of the weight
+                if id(m.weight) == id(parameter):
+                    break
+
+            shape = m.weight.data.shape
+            gain = 1.0
+            scale = 1.0  # extra scale for gain
+
+            if isinstance(m, nn.Embedding):
+                gain = math.sqrt(max(shape[0], shape[1]))
+                if shape[0] == config.vocab_size and shape[1] == config.n_embd:  # token emb?
+                    scale = 1e-4
+                else:
+                    scale = 0
+
+            if isinstance(m, nn.Linear):
+                if m.bias is not None:
+                    m.bias.data.zero_()
+                if shape[0] > shape[1]:
+                    gain = math.sqrt(shape[0] / shape[1])
+                if shape[0] == config.vocab_size and shape[1] == config.n_embd:  # final projection?
+                    scale = 0.5
+
+            if hasattr(m, 'scale_init'):
+                scale = m.scale_init
+
+            # print(str(shape[0]).ljust(5), str(shape[1]).ljust(5), f'{round(scale,2):g}'.ljust(4), name)
+
+            gain *= scale
+            if scale == -999:
+                nn.init.eye_(m.weight)
+            elif gain == 0:
+                # zero init is great for some RWKV matrices
+                nn.init.zeros_(m.weight)
+            elif gain > 0:
+                nn.init.orthogonal_(m.weight, gain=gain)
+            else:
+                nn.init.normal_(m.weight, mean=0.0, std=-scale)
+>>>>>>> 61b7c429df4e64d1c970c25f7d19e058c8d633fb
 
 
 class RWKV_TimeMix(nn.Module):
@@ -344,10 +395,12 @@ class GPT(nn.Module):
             q = self.head_q(x)[:, :T, :]
             k = self.head_k(x)[:, :T, :]
             c = (q @ k.transpose(-2, -1)) * (1.0 / RWKV_HEAD_QK_DIM)
+
             # c = c.masked_fill(self.copy_mask[:T, :T] == 0, 0)
             c = c.float()
             
             c = c @ F.one_hot(idx, num_classes=self.config.vocab_size).float()
+
 
             x = self.head(x) + c
         else:

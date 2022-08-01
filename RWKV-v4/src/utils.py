@@ -46,7 +46,8 @@ class Dataset(Dataset):
 
     def __getitem__(self, idx):
         # cheat: pick a random spot in dataset
-        i = np.random.randint(0, len(self.data) - (self.ctx_len + 1))
+        # i = np.random.randint(0, len(self.data) - (self.ctx_len + 1))
+        i=1
         chunk = self.data[i:i+self.ctx_len+1]
         dix = [self.stoi[s] for s in chunk]
         x = torch.tensor(dix[:-1], dtype=torch.long)

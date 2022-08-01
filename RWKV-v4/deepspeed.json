@@ -23,11 +23,11 @@
         "overlap_events":true,
         "thread_count":1
     },
-    "gradient_clipping": 1.0,
+    "gradient_clipping": 0.0,
     "gradient_accumulation_steps": 1,
     "fp16": {
-        "fp16": true,
-        "enabled": true,
+        "fp16": false,
+        "enabled": false,
         "loss_scale": 0,
         "initial_scale_power": 12,
         "loss_scale_window": 1000,

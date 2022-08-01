@@ -13,7 +13,7 @@ import logging
 import datetime
 import math
 from pytorch_lightning.lite import LightningLite
-
+import pdb
 logger = logging.getLogger(__name__)
 torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.allow_tf32 = True
@@ -55,12 +55,18 @@ class Trainer(LightningLite):
         print('[1]')
         model.to(self.device)
         print('[2]')
+
+        # with torch.no_grad():
+        #     if m_cfg.LOAD_MODEL:
+        #         print('loading', m_cfg.MODEL_NAME)
+        #         m2 = torch.load(m_cfg.MODEL_NAME + '.pth', map_location=torch.device(self.device))
+        #         model.load_state_dict(m2)
+        #         del m2
+
         with torch.no_grad():
-            if m_cfg.LOAD_MODEL:
-                print('loading', m_cfg.MODEL_NAME)
-                m2 = torch.load(m_cfg.MODEL_NAME + '.pth', map_location=torch.device(self.device))
-                model.load_state_dict(m2)
-                del m2
+            m=torch.load('/home/chenqiaoling/RWKV-LM/RWKV-v4/trained-1.pth',map_location=torch.device('cpu'))
+            model.load_state_dict(m)
+            print("*******************1")
 
         self.model = model
         self.train_dataset = train_dataset
@@ -84,6 +90,8 @@ class Trainer(LightningLite):
         model, config = self.model, self.config
         raw_model = model.module if hasattr(self.model, "module") else model
         optimizer = raw_model.configure_optimizers(config)
+        # pdb.set_trace()
+
         model, optimizer = self.setup(model, optimizer) 
         print('[3]')
 
@@ -102,17 +110,24 @@ class Trainer(LightningLite):
                 loader = DataLoader(data, shuffle=False,
                                     batch_size=config.batch_size // NUM_GPUS,
                                     num_workers=config.num_workers)
+         
 
             pbar = tqdm(enumerate(loader), total=len(
                 loader), bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}') if is_train else enumerate(loader)
             loader = self.setup_dataloaders(loader)
+
+            txt = open("/home/chenqiaoling/RWKV-LM/libai/projects/RWKV_V4/rwkv_torch.txt", "a")
             
             for it, (x, y) in pbar:
+
+               
                 with torch.set_grad_enabled(is_train):
                     _, loss = model(x, y) # forward the model
                 
+                # pdb.set_trace()
                 all_loss = [loss.clone() for _ in range(NUM_GPUS)]
                 torch.distributed.all_gather(all_loss, loss)
+                # pdb.set_trace()
 
                 if is_train:  # backprop and update the parameters
                     model.zero_grad()
@@ -138,10 +153,15 @@ class Trainer(LightningLite):
                             lr_mult = lr_final_factor
                         else:
                             lr_mult = math.exp(math.log(lr_final_factor) * pow(progress, 1))
-                    lr = config.learning_rate * lr_mult
+                    # 
+                    # lr = config.learning_rate * lr_mult
+
+                    lr = 8e-4
 
                     for param_group in optimizer.param_groups:
                         param_group['lr'] = lr
+                    
+                    # pdb.set_trace()
 
                     self.lr = lr
                     self.steps += 1
@@ -158,11 +178,16 @@ class Trainer(LightningLite):
                     else:
                         factor = 1 / (it + 1)
                         self.avg_loss = self.avg_loss * (1.0 - factor) + now_loss * factor
-
+                    
+                    # 添加 now_loss 为 loss
+                  
+                    
+                    txt.write(str(loss.item())+"\n")
                     pbar.set_description(f"miniE {epoch+1+self.EPOCH_BEGIN} s {self.steps} prog {progress*100.0:.2f}% : ppl {math.exp(self.avg_loss):.6f} loss {self.avg_loss:.6f} lr {lr:e}")
 
         self.tokens = 0  # counter used for learning rate decay
-        for epoch in range(99999999):
+
+        for epoch in range(1):
 
             run_epoch('train')
             if math.isnan(self.avg_loss):

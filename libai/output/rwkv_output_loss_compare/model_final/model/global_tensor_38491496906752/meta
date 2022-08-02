@@ -1,5 +1,0 @@
-shape {
-  dim: 2048
-  dim: 512
-}
-data_type: kFloat

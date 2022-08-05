@@ -1,7 +1,3 @@
-########################################################################################################
-# The RWKV Language Model - https://github.com/BlinkDL/RWKV-LM
-########################################################################################################
-
 import os
 NUM_GPUS = int(os.environ['RWKV_NUM_GPUS'])
 USE_WANDB = (int(os.environ['USE_WANDB']) == 1)
@@ -56,17 +52,17 @@ class Trainer(LightningLite):
         model.to(self.device)
         print('[2]')
 
-        # with torch.no_grad():
-        #     if m_cfg.LOAD_MODEL:
-        #         print('loading', m_cfg.MODEL_NAME)
-        #         m2 = torch.load(m_cfg.MODEL_NAME + '.pth', map_location=torch.device(self.device))
-        #         model.load_state_dict(m2)
-        #         del m2
-
         with torch.no_grad():
-            m=torch.load('/home/chenqiaoling/RWKV-LM/RWKV-v4/trained-1.pth',map_location=torch.device('cpu'))
-            model.load_state_dict(m)
-            print("*******************1")
+            if m_cfg.LOAD_MODEL:
+                print('loading', m_cfg.MODEL_NAME)
+                m2 = torch.load(m_cfg.MODEL_NAME + '.pth', map_location=torch.device(self.device))
+                model.load_state_dict(m2)
+                del m2
+
+        # with torch.no_grad():
+        #     m=torch.load('/home/chenqiaoling/RWKV-LM/RWKV-v4/trained-1.pth',map_location=torch.device('cpu'))
+        #     model.load_state_dict(m)
+        #     print("*******************1")
 
         self.model = model
         self.train_dataset = train_dataset
@@ -90,7 +86,6 @@ class Trainer(LightningLite):
         model, config = self.model, self.config
         raw_model = model.module if hasattr(self.model, "module") else model
         optimizer = raw_model.configure_optimizers(config)
-        # pdb.set_trace()
 
         model, optimizer = self.setup(model, optimizer) 
         print('[3]')

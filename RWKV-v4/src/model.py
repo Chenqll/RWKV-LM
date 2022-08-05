@@ -13,7 +13,7 @@ import pdb
 
 logger = logging.getLogger(__name__)
 
-RWKV_HEAD_QK_DIM = 0
+RWKV_HEAD_QK_DIM = 256
 print(f'\nRWKV_HEAD_QK_DIM {RWKV_HEAD_QK_DIM}\n')
 # ########################################################################################################
 # # CUDA Kernel
@@ -164,7 +164,6 @@ def RWKV_Init(module, config):  # fancy initialization of all lin & emb layer in
                 nn.init.orthogonal_(m.weight, gain=gain)
             else:
                 nn.init.normal_(m.weight, mean=0.0, std=-scale)
->>>>>>> 61b7c429df4e64d1c970c25f7d19e058c8d633fb
 
 
 class RWKV_TimeMix(nn.Module):

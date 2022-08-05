@@ -6,8 +6,10 @@ import os
 
 os.environ['USE_WANDB'] = '0' # 0 = False, 1 = True
 
-os.environ['RWKV_FLOAT_MODE'] = 'bf16' # 'bf16' (stable) or 'fp16' (will overflow after training a large model for very long. can be solved in the future)
+# os.environ['RWKV_FLOAT_MODE'] = 'bf16' # 'bf16' (stable) or 'fp16' (will overflow after training a large model for very long. can be solved in the future)
 
+# os.environ['RWKV_FLOAT_MODE'] = 'bf16' # 'bf16' (stable) or 'fp16' (will overflow after training a large model for very long. can be solved in the future)
+os.environ['RWKV_FLOAT_MODE'] = 'fp32' # 'bf16' (stable) or 'fp16' (will overflow after training a large model for very long. can be solved in the future)
 ### This is using DeepSpeed stage2 + FP16 ##############################################################
 # 
 # Currently it's slow to initialize a new model. Hence I suggest this procedure for multi-GPU training:
@@ -15,7 +17,7 @@ os.environ['RWKV_FLOAT_MODE'] = 'bf16' # 'bf16' (stable) or 'fp16' (will overflo
 # 2) set RWKV_NUM_GPUS = '8' (or your #GPU), batch_size = NUM_GPUS * single_gpu_batchsz, 
 #    EPOCH_BEGIN = 1, LOAD_MODEL = True, and it will load 'trained-1.pth' and continue the training
 #
-os.environ['RWKV_NUM_GPUS'] = '1' # num of GPUs to use
+os.environ['RWKV_NUM_GPUS'] = '2' # num of GPUs to use
 NUM_GPUS = int(os.environ['RWKV_NUM_GPUS'])
 
 ### Change these if you want to continue training from a saved model ###################################
@@ -36,13 +38,14 @@ from src.utils import Dataset
 import torch
 import numpy as np
 from src.binidx import MMapIndexedDataset # for the Megatron-LM 'binidx' format
+import pdb
 
 np.set_printoptions(precision=4, suppress=True, linewidth=200)
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
                     datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO,)
 torch.backends.cudnn.benchmark = True
-torch.backends.cudnn.allow_tf32 = True
-torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = False
+torch.backends.cuda.matmul.allow_tf32 = False
 
 ### Step 1: set training data ##########################################################################
 
@@ -56,7 +59,7 @@ datafile_encoding = 'utf-8' # 'utf-8' 'utf-16le' 'binidx'
 
 ctx_len = 1024 # increase T_MAX in model.py if your ctx_len is very long
 n_layer = 6
-n_embd = 512
+n_embd = 2048
 
 # 'RWKV' or 'RWKV-ffnPre' (better in some cases)
 model_type = 'RWKV'
@@ -68,7 +71,7 @@ model_type = 'RWKV'
 ### Step 3: set batch size #############################################################################
 
 # if you see "CUDA out of memory", reduce batch_size. Use nvidia-smi to find the highest value for your GPU.
-batch_size = 12 * NUM_GPUS
+batch_size = 4 * NUM_GPUS
 assert (batch_size % NUM_GPUS == 0)
 
 ### Step 4: set learning rate, number of mini-epochs #######################################################
@@ -179,13 +182,19 @@ if __name__ == '__main__':
             "hysteresis": 2,
             "min_loss_scale": 1
         }
-        trainer = Trainer(strategy=DeepSpeedStrategy(config=DEEPSPEED_CFG), devices=NUM_GPUS, accelerator="gpu", precision=16)
+        trainer = Trainer(devices=NUM_GPUS, accelerator="gpu", precision=16)
+        # trainer = Trainer(strategy=DeepSpeedStrategy(config=DEEPSPEED_CFG), devices=NUM_GPUS, accelerator="gpu", precision=16)
     elif os.environ['RWKV_FLOAT_MODE'] == 'bf16':
         DEEPSPEED_CFG["bf16"] = {
             "enabled": True
         }
         trainer = Trainer(strategy=DeepSpeedStrategy(config=DEEPSPEED_CFG), devices=NUM_GPUS, accelerator="gpu", precision='bf16')
 
-    print(trainer._strategy.config)
+    else: 
+        DEEPSPEED_CFG["fp32"] = {
+            "enabled": True
+        }  
+        trainer = Trainer(devices=NUM_GPUS, accelerator="gpu", precision=32)
+
 
     trainer.run(m_cfg, train_dataset, None, tconf)

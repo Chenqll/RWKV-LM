@@ -9,7 +9,7 @@ os.environ['USE_WANDB'] = '0' # 0 = False, 1 = True
 # os.environ['RWKV_FLOAT_MODE'] = 'bf16' # 'bf16' (stable) or 'fp16' (will overflow after training a large model for very long. can be solved in the future)
 
 # os.environ['RWKV_FLOAT_MODE'] = 'bf16' # 'bf16' (stable) or 'fp16' (will overflow after training a large model for very long. can be solved in the future)
-os.environ['RWKV_FLOAT_MODE'] = 'fp32' # 'bf16' (stable) or 'fp16' (will overflow after training a large model for very long. can be solved in the future)
+os.environ['RWKV_FLOAT_MODE'] = 'bf16' # 'bf16' (stable) or 'fp16' (will overflow after training a large model for very long. can be solved in the future)
 ### This is using DeepSpeed stage2 + FP16 ##############################################################
 # 
 # Currently it's slow to initialize a new model. Hence I suggest this procedure for multi-GPU training:
@@ -17,7 +17,7 @@ os.environ['RWKV_FLOAT_MODE'] = 'fp32' # 'bf16' (stable) or 'fp16' (will overflo
 # 2) set RWKV_NUM_GPUS = '8' (or your #GPU), batch_size = NUM_GPUS * single_gpu_batchsz, 
 #    EPOCH_BEGIN = 1, LOAD_MODEL = True, and it will load 'trained-1.pth' and continue the training
 #
-os.environ['RWKV_NUM_GPUS'] = '2' # num of GPUs to use
+os.environ['RWKV_NUM_GPUS'] = '1' # num of GPUs to use
 NUM_GPUS = int(os.environ['RWKV_NUM_GPUS'])
 
 ### Change these if you want to continue training from a saved model ###################################
@@ -59,7 +59,7 @@ datafile_encoding = 'utf-8' # 'utf-8' 'utf-16le' 'binidx'
 
 ctx_len = 1024 # increase T_MAX in model.py if your ctx_len is very long
 n_layer = 6
-n_embd = 2048
+n_embd = 512
 
 # 'RWKV' or 'RWKV-ffnPre' (better in some cases)
 model_type = 'RWKV'
@@ -87,7 +87,7 @@ assert (batch_size % NUM_GPUS == 0)
 # For L12-D768, set lr_init = 6e-4. For L24-D1024, set lr_init = 4e-4. For L24-D2048, set lr_init = 3e-4.
 
 lr_init = 8e-4
-lr_final = 1e-5
+lr_final = 8e-4
 
 # the mini-epoch is very short and of fixed length (length = ctx_len * epoch_length_fixed tokens)
 n_epoch = 1
@@ -188,7 +188,7 @@ if __name__ == '__main__':
         DEEPSPEED_CFG["bf16"] = {
             "enabled": True
         }
-        trainer = Trainer(strategy=DeepSpeedStrategy(config=DEEPSPEED_CFG), devices=NUM_GPUS, accelerator="gpu", precision='bf16')
+        trainer = Trainer(strategy=DeepSpeedStrategy(config=DEEPSPEED_CFG),devices=NUM_GPUS, accelerator="gpu", precision="bf16")
 
     else: 
         DEEPSPEED_CFG["fp32"] = {

@@ -12,8 +12,8 @@ from pytorch_lightning.lite import LightningLite
 import pdb
 logger = logging.getLogger(__name__)
 torch.backends.cudnn.benchmark = True
-torch.backends.cudnn.allow_tf32 = True
-torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = False
+torch.backends.cuda.matmul.allow_tf32 = False
 
 class TrainerConfig:
     batch_size = 64
@@ -52,17 +52,17 @@ class Trainer(LightningLite):
         model.to(self.device)
         print('[2]')
 
-        with torch.no_grad():
-            if m_cfg.LOAD_MODEL:
-                print('loading', m_cfg.MODEL_NAME)
-                m2 = torch.load(m_cfg.MODEL_NAME + '.pth', map_location=torch.device(self.device))
-                model.load_state_dict(m2)
-                del m2
-
         # with torch.no_grad():
-        #     m=torch.load('/home/chenqiaoling/RWKV-LM/RWKV-v4/trained-1.pth',map_location=torch.device('cpu'))
-        #     model.load_state_dict(m)
-        #     print("*******************1")
+        #     if m_cfg.LOAD_MODEL:
+        #         print('loading', m_cfg.MODEL_NAME)
+        #         m2 = torch.load(m_cfg.MODEL_NAME + '.pth', map_location=torch.device(self.device))
+        #         model.load_state_dict(m2)
+        #         del m2
+
+        with torch.no_grad():
+            m=torch.load('/home/chenqiaoling/RWKV-LM/RWKV-v4/for_load.pth',map_location=torch.device('cpu'))
+            model.load_state_dict(m)
+            print("*******************1")
 
         self.model = model
         self.train_dataset = train_dataset
@@ -111,7 +111,7 @@ class Trainer(LightningLite):
                 loader), bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}') if is_train else enumerate(loader)
             loader = self.setup_dataloaders(loader)
 
-            txt = open("/home/chenqiaoling/RWKV-LM/libai/projects/RWKV_V4/rwkv_torch.txt", "a")
+            txt = open("/home/chenqiaoling/libai/projects/RWKV_v4/results/torch_bf16_defaultSize_fixmaskedfill_withds.txt", "a")
             
             for it, (x, y) in pbar:
 
@@ -119,10 +119,13 @@ class Trainer(LightningLite):
                 with torch.set_grad_enabled(is_train):
                     _, loss = model(x, y) # forward the model
                 
-                # pdb.set_trace()
-                all_loss = [loss.clone() for _ in range(NUM_GPUS)]
-                torch.distributed.all_gather(all_loss, loss)
-                # pdb.set_trace()
+                
+                # 对齐 loss 时 需要注释掉这一段
+                # all_loss = [loss.clone() for _ in range(NUM_GPUS)]
+                # torch.distributed.all_gather(all_loss, loss)
+
+                all_loss=loss.clone()
+                
 
                 if is_train:  # backprop and update the parameters
                     model.zero_grad()
@@ -162,8 +165,11 @@ class Trainer(LightningLite):
                     self.steps += 1
                     
                     now_loss = 0
-                    for gg in range(NUM_GPUS):
-                        now_loss += all_loss[gg].item()
+
+                    # for gg in range(NUM_GPUS):
+                    #     now_loss += all_loss[gg].item()
+
+                    now_loss=all_loss.item()
                     now_loss = now_loss / NUM_GPUS # report progress                    
                     if USE_WANDB and self.cuda_id == 0:
                         wandb.log({"loss": now_loss}, step = self.steps)

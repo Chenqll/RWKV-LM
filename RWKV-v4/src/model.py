@@ -19,100 +19,52 @@ print(f'\nRWKV_HEAD_QK_DIM {RWKV_HEAD_QK_DIM}\n')
 # # CUDA Kernel
 # ########################################################################################################
 
-# T_MAX = 4096 # increase this if your ctx_len is long
-# # it's possible to go beyond CUDA limitations if you slice the ctx and pass the hidden state in each slice
+T_MAX = 4096 # increase this if your ctx_len is long
+# it's possible to go beyond CUDA limitations if you slice the ctx and pass the hidden state in each slice
 
-# from torch.utils.cpp_extension import load
-# wkv_cuda = load(name="wkv", sources=["cuda/wkv_op.cpp", "cuda/wkv_cuda.cu"],
-#                 verbose=True, extra_cuda_cflags=['--use_fast_math', '--extra-device-vectorization', f'-DTmax={T_MAX}'])
+from torch.utils.cpp_extension import load
+wkv_cuda = load(name="wkv", sources=["cuda/wkv_op.cpp", "cuda/wkv_cuda.cu"],
+                verbose=True, extra_cuda_cflags=['--use_fast_math', '--extra-device-vectorization', f'-DTmax={T_MAX}'])
 
-# class WKV(torch.autograd.Function):
-#     @staticmethod
-#     def forward(ctx, B, T, C, w, u, k, v):
-#         ctx.B = B
-#         ctx.T = T
-#         ctx.C = C
-#         assert T <= T_MAX
-#         assert B * C % min(C, 1024) == 0
-#         w = -torch.exp(w.float().contiguous())
-#         u = u.float().contiguous()
-#         k = k.float().contiguous()
-#         v = v.float().contiguous()
-#         ctx.save_for_backward(w, u, k, v)
-#         y = torch.empty((B, T, C), device='cuda', memory_format=torch.contiguous_format)
-#         wkv_cuda.forward(B, T, C, w, u, k, v, y)
-#         return y.half()
+class WKV(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, B, T, C, w, u, k, v):
+        ctx.B = B
+        ctx.T = T
+        ctx.C = C
+        assert T <= T_MAX
+        assert B * C % min(C, 1024) == 0
+        w = -torch.exp(w.float().contiguous())
+        u = u.float().contiguous()
+        k = k.float().contiguous()
+        v = v.float().contiguous()
+        ctx.save_for_backward(w, u, k, v)
+        y = torch.empty((B, T, C), device='cuda', memory_format=torch.contiguous_format)
+        wkv_cuda.forward(B, T, C, w, u, k, v, y)
+        # return y.float()
+        return y.bfloat16()
 
-#     @staticmethod
-#     def backward(ctx, gy):
-#         B = ctx.B
-#         T = ctx.T
-#         C = ctx.C
-#         assert T <= T_MAX
-#         assert B * C % min(C, 1024) == 0
-#         w, u, k, v = ctx.saved_tensors
-#         gw = torch.zeros((B, C), device='cuda')
-#         gu = torch.zeros((B, C), device='cuda')
-#         gk = torch.zeros((B, T, C), device='cuda')
-#         gv = torch.zeros((B, T, C), device='cuda')
-#         wkv_cuda.backward(B, T, C, w, u, k, v, gy.float().contiguous(), gw, gu, gk, gv)
-#         gw = torch.sum(gw, dim=0)
-#         gu = torch.sum(gu, dim=0)
-#         return (None, None, None, gw.half(), gu.half(), gk.half(), gv.half())
+    @staticmethod
+    def backward(ctx, gy):
+        B = ctx.B
+        T = ctx.T
+        C = ctx.C
+        assert T <= T_MAX
+        assert B * C % min(C, 1024) == 0
+        w, u, k, v = ctx.saved_tensors
+        gw = torch.zeros((B, C), device='cuda')
+        gu = torch.zeros((B, C), device='cuda')
+        gk = torch.zeros((B, T, C), device='cuda')
+        gv = torch.zeros((B, T, C), device='cuda')
+        wkv_cuda.backward(B, T, C, w, u, k, v, gy.float().contiguous(), gw, gu, gk, gv)
+        gw = torch.sum(gw, dim=0)
+        gu = torch.sum(gu, dim=0)
+        # return (None, None, None, gw.float(), gu.float(), gk.float(), gv.float())
+        # return (None, None, None, gw.half(), gu.half(), gk.half(), gv.half())
+        return (None, None, None, gw.bfloat16(), gu.bfloat16(), gk.bfloat16(), gv.bfloat16())
 
-# def RUN_CUDA(B, T, C, w, u, k, v):
-#     return WKV.apply(B, T, C, w.cuda(), u.cuda(), k.cuda(), v.cuda())
-
-# ########################################################################################################
-# # RWKV: RWKV Time-mix + RWKV Channel-mix
-# ########################################################################################################
-
-# def RWKV_Init(module, config):  # fancy initialization of all lin & emb layer in the module
-#     print('\n[--> first run, init model params (very slow for large models) <--]\n')
-#     print('\n[so you shall only do it for 1 single GPU and save the checkpt and load it when using multiple GPU]\n')
-#     for m in module.modules():
-#         if not isinstance(m, (nn.Linear, nn.Embedding)):
-#             continue
-#         with torch.no_grad():
-#             name = '[unknown weight]'
-#             for name, parameter in module.named_parameters():  # find the name of the weight
-#                 if id(m.weight) == id(parameter):
-#                     break
-
-#             shape = m.weight.data.shape
-#             gain = 1.0
-#             scale = 1.0  # extra scale for gain
-
-#             if isinstance(m, nn.Embedding):
-#                 gain = math.sqrt(max(shape[0], shape[1]))
-#                 if shape[0] == config.vocab_size and shape[1] == config.n_embd:  # token emb?
-#                     scale = 1e-4
-#                 else:
-#                     scale = 0
-
-#             if isinstance(m, nn.Linear):
-#                 if m.bias is not None:
-#                     m.bias.data.zero_()
-#                 if shape[0] > shape[1]:
-#                     gain = math.sqrt(shape[0] / shape[1])
-#                 if shape[0] == config.vocab_size and shape[1] == config.n_embd:  # final projection?
-#                     scale = 0.5
-
-#             if hasattr(m, 'scale_init'):
-#                 scale = m.scale_init
-
-#             # print(str(shape[0]).ljust(5), str(shape[1]).ljust(5), f'{round(scale,2):g}'.ljust(4), name)
-
-#             gain *= scale
-#             if scale == -999:
-#                 nn.init.eye_(m.weight)
-#             elif gain == 0:
-#                 # zero init is great for some RWKV matrices
-#                 nn.init.zeros_(m.weight)
-#             elif gain > 0:
-#                 nn.init.orthogonal_(m.weight, gain=gain)
-#             else:
-#                 nn.init.normal_(m.weight, mean=0.0, std=-scale)
+def RUN_CUDA(B, T, C, w, u, k, v):
+    return WKV.apply(B, T, C, w.cuda(), u.cuda(), k.cuda(), v.cuda())
 
 ########################################################################################################
 # RWKV: RWKV Time-mix + RWKV Channel-mix
@@ -224,7 +176,15 @@ class RWKV_TimeMix(nn.Module):
         v = self.value(xv)
         r = self.receptance(xr)
 
-        rwkv = torch.sigmoid(r)
+        rwkv = torch.sigmoid(r)* RUN_CUDA(B, T, C, self.time_decay, self.time_first, k, v)
+
+        # g_rwkv=rwkv.grad
+        # g_td=self.time_decay.grad
+        # g_tf=self.time_first.grad
+        # g_k=k.grad
+        # g_v=v.grad
+        # pdb.set_trace()
+        # rwkv = torch.sigmoid(r)
         rwkv = self.output(rwkv)
         return rwkv
 
@@ -304,6 +264,7 @@ class Block(nn.Module):
         # if self.layer_id == 0 and self.config.model_type == 'RWKV-ffnPre':
         #     x = x + self.ffnPre(self.ln1(x))  # better in some cases
         # else:
+
         x = x + self.att(self.ln1(x))
         x = x + self.ffn(self.ln2(x))
         return x
@@ -395,7 +356,7 @@ class GPT(nn.Module):
             k = self.head_k(x)[:, :T, :]
             c = (q @ k.transpose(-2, -1)) * (1.0 / RWKV_HEAD_QK_DIM)
 
-            # c = c.masked_fill(self.copy_mask[:T, :T] == 0, 0)
+            c = c.masked_fill(self.copy_mask[:T, :T] == 0, 0)
             c = c.float()
             
             c = c @ F.one_hot(idx, num_classes=self.config.vocab_size).float()
